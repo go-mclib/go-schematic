@@ -116,7 +116,20 @@ func ReadFrom(r io.Reader) (*Schematic, error) {
 		Length:      root.GetShort("Length"),
 	}
 
-	if off := root.GetIntArray("Offset"); len(off) >= 3 {
+	// v2 stores the world-origin-relative offset in "Offset" which isn't useful
+	// for relative placement; the correct player-relative offset is in Metadata.WEOffset*.
+	// v3 stores the player-relative offset directly in "Offset".
+	if version == 2 {
+		if meta := root.GetCompound("Metadata"); meta != nil {
+			if weX, ok := meta["WEOffsetX"].(nbt.Int); ok {
+				if weY, ok := meta["WEOffsetY"].(nbt.Int); ok {
+					if weZ, ok := meta["WEOffsetZ"].(nbt.Int); ok {
+						s.Offset = [3]int32{int32(weX), int32(weY), int32(weZ)}
+					}
+				}
+			}
+		}
+	} else if off := root.GetIntArray("Offset"); len(off) >= 3 {
 		s.Offset = [3]int32{off[0], off[1], off[2]}
 	}
 
