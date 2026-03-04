@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/go-mclib/protocol/nbt"
 )
@@ -116,10 +117,14 @@ func ReadFrom(r io.Reader) (*Schematic, error) {
 		Length:      root.GetShort("Length"),
 	}
 
-	// v2 stores the world-origin-relative offset in "Offset" which isn't useful
-	// for relative placement; the correct player-relative offset is in Metadata.WEOffset*.
+	// v2 stores the world-origin-relative offset in "Offset"; the correct
+	// player-relative offset is in Metadata.WEOffset*.
 	// v3 stores the player-relative offset directly in "Offset".
+	var worldOrigin [3]int32
 	if version == 2 {
+		if off := root.GetIntArray("Offset"); len(off) >= 3 {
+			worldOrigin = [3]int32{off[0], off[1], off[2]}
+		}
 		if meta := root.GetCompound("Metadata"); meta != nil {
 			if weX, ok := meta["WEOffsetX"].(nbt.Int); ok {
 				if weY, ok := meta["WEOffsetY"].(nbt.Int); ok {
@@ -152,6 +157,16 @@ func ReadFrom(r io.Reader) (*Schematic, error) {
 	}
 	s.readBlockEntities(blocksCompound)
 	s.readEntities(root)
+
+	// v2 entity positions are absolute world coordinates;
+	// normalize to schematic-relative by subtracting the world origin
+	if version == 2 {
+		for i := range s.Entities {
+			s.Entities[i].Pos[0] -= float64(worldOrigin[0])
+			s.Entities[i].Pos[1] -= float64(worldOrigin[1])
+			s.Entities[i].Pos[2] -= float64(worldOrigin[2])
+		}
+	}
 
 	return s, nil
 }
@@ -260,9 +275,18 @@ func (s *Schematic) readEntities(root nbt.Compound) {
 		}
 
 		for k, v := range comp {
-			if k != "Id" && k != "Pos" {
-				e.Data[k] = v
+			if k == "Id" || k == "Pos" {
+				continue
 			}
+			if isServerInternalKey(k) {
+				continue
+			}
+			// block_pos contains absolute world coordinates that don't
+			// survive relocation; MC recalculates it from the entity position
+			if k == "block_pos" {
+				continue
+			}
+			e.Data[k] = v
 		}
 		s.Entities = append(s.Entities, e)
 	}
@@ -345,6 +369,18 @@ func (s *Schematic) encodeBlockData() []byte {
 		buf = AppendVarint(buf, int(id))
 	}
 	return buf
+}
+
+// isServerInternalKey returns true for keys injected by server implementations
+// (Paper, Bukkit, Spigot) that don't belong in vanilla commands.
+func isServerInternalKey(k string) bool {
+	switch {
+	case k == "UUID" || k == "WorldUUIDMost" || k == "WorldUUIDLeast":
+		return true
+	case strings.HasPrefix(k, "Paper.") || strings.HasPrefix(k, "Bukkit.") || strings.HasPrefix(k, "Spigot."):
+		return true
+	}
+	return false
 }
 
 // DecodeVarint reads a variable-length integer from the byte slice.
